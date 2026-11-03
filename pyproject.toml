@@ -26,5 +26,13 @@ dependencies = [
 [project.scripts]
 lepao = "budaolepao_cli.cli:main"
 
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [tool.setuptools.packages.find]
 include = ["budaolepao_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "poc/emulator_run", "detection/tests", "eval/tests"]
+pythonpath = [".", "detection", "eval", "poc/emulator_run"]
+addopts = "--import-mode=importlib"

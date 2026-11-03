@@ -62,11 +62,13 @@ def _ask_demo() -> bool:
 
 
 def _config_set():
-    speed = Prompt.ask("配速 (m/s)，范围如 4-5 或单点 4.5", default="4-5")
+    speed = Prompt.ask("速度 (m/s)，范围如 4-5 或单点 4.5", default="4-5")
     distance = Prompt.ask("目标里程 (m)", default="3000")
     rc = _spawn(["config", "set", "--speed", speed, "--distance", distance])
     if rc == 0:
         console.print("[green]配置已保存[/]")
+    else:
+        console.print("[red]配置未保存，请检查上方错误信息[/]")
     Prompt.ask("按回车返回")
 
 
@@ -77,6 +79,8 @@ def _config_route():
         rc = _spawn(["config", "map"])
         if rc == 0:
             console.print("[green]路线已保存[/]")
+        else:
+            console.print("[red]路线未保存，请检查上方错误信息[/]")
     else:
         pts = Prompt.ask(
             "路线经纬度 (lon,lat lon,lat ...，至少 3 个)", default=""
@@ -87,6 +91,8 @@ def _config_route():
             rc = _spawn(["config", "route"] + pts.split())
             if rc == 0:
                 console.print("[green]路线已保存[/]")
+            else:
+                console.print("[red]路线未保存，请检查上方错误信息[/]")
     Prompt.ask("按回车返回")
 
 
@@ -101,7 +107,10 @@ def main():
             break
 
         if choice == "1":
-            _spawn(["run"])
+            rc = _spawn(["run"])
+            if rc != 0:
+                console.print("[red]模拟已停止，请检查上方错误信息[/]")
+            Prompt.ask("按回车返回")
         elif choice == "2":
             _spawn(["detect"])
         elif choice == "3":
