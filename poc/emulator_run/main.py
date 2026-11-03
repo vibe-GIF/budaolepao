@@ -19,10 +19,11 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -48,6 +49,8 @@ class Config:
     ])
     dist_limit_m: float = 16000.0
     base_speed_mps: float = 4.5
+    min_speed_mps: Optional[float] = None
+    max_speed_mps: Optional[float] = None
     speed_amp: float = 0.8
     speed_cycle_sec: float = 30.0
     jitter_radius_m: float = 2.0
@@ -61,11 +64,12 @@ class Config:
     tap_delay_sec: float = 1.0
     window_delay_sec: float = 15.0
     instance_index: int = 0
-    run_pkg: str = "com.lptiyu.tanke"  # 独立步道乐跑 App（绕开微信风控）
+    run_pkg: str = "com.lptiyu.tanke"
     auto_start_run: bool = True
-    # 竖屏 900x1600 下按钮坐标（App 强制竖屏，坐标稳定）
+    allow_coordinate_fallback: bool = False
+    # 旧版 900x1600 界面的坐标；仅在明确启用回退时使用。
     click_threshold: float = 0.7
-    # 图片识别模板（img/，图片识别优先，坐标兜底）
+    # 图片识别模板（img/）；默认识别失败即停止。
     tpl_begin: str = "img/begin_run.png"
     tpl_free: str = "img/free_run.png"
     tpl_pause: str = "img/pause_run.png"
@@ -78,19 +82,86 @@ class Config:
     confirm_x: int = 575; confirm_y: int = 936   # 确认结束(绿,兜底)
 
 
+def validate_config(cfg: Config) -> None:
+    """Reject invalid input before any emulator or application action."""
+    def number(name, value, minimum=None, strict=False):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number")
+        if minimum is not None and (value <= minimum if strict else value < minimum):
+            relation = ">" if strict else ">="
+            raise ValueError(f"{name} must be {relation} {minimum}")
+
+    for name in ("dist_limit_m", "base_speed_mps", "speed_cycle_sec", "lateral_cycle_sec", "tick_base_sec"):
+        number(name, getattr(cfg, name), 0, strict=True)
+    for name in ("speed_amp", "jitter_radius_m", "ou_theta", "ou_sigma", "tick_log_sigma",
+                 "lateral_amp", "tap_delay_sec", "window_delay_sec"):
+        number(name, getattr(cfg, name), 0)
+    number("tick_log_mu", cfg.tick_log_mu)
+    if (cfg.min_speed_mps is None) != (cfg.max_speed_mps is None):
+        raise ValueError("min_speed_mps and max_speed_mps must be set together")
+    if cfg.min_speed_mps is not None:
+        number("min_speed_mps", cfg.min_speed_mps, 0, strict=True)
+        number("max_speed_mps", cfg.max_speed_mps, 0, strict=True)
+        if cfg.min_speed_mps > cfg.max_speed_mps:
+            raise ValueError("min_speed_mps must not exceed max_speed_mps")
+    else:
+        if cfg.base_speed_mps <= cfg.speed_amp:
+            raise ValueError("base_speed_mps must exceed speed_amp")
+        if not math.isfinite(cfg.base_speed_mps + cfg.speed_amp):
+            raise ValueError("base_speed_mps + speed_amp must remain finite")
+    number("click_threshold", cfg.click_threshold, 0, strict=True)
+    if cfg.click_threshold > 1:
+        raise ValueError("click_threshold must not exceed 1")
+    if type(cfg.instance_index) is not int or cfg.instance_index < 0:
+        raise ValueError("instance_index must be a nonnegative integer")
+    for name in ("auto_start_run", "allow_coordinate_fallback"):
+        if type(getattr(cfg, name)) is not bool:
+            raise ValueError(f"{name} must be a boolean")
+    if not isinstance(cfg.run_pkg, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", cfg.run_pkg):
+        raise ValueError("run_pkg must be an Android package identifier")
+    for name in ("tpl_begin", "tpl_free", "tpl_pause", "tpl_end", "tpl_confirm_end"):
+        if not isinstance(getattr(cfg, name), str) or not getattr(cfg, name):
+            raise ValueError(f"{name} must be a nonempty path")
+    for name in ("begin_x", "begin_y", "free_x", "free_y", "pause_x", "pause_y",
+                 "end_x", "end_y", "confirm_x", "confirm_y"):
+        if type(getattr(cfg, name)) is not int or getattr(cfg, name) < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    if not isinstance(cfg.walk_path, (list, tuple)) or len(cfg.walk_path) < 3:
+        raise ValueError("walk_path requires at least 3 distinct points")
+    points = []
+    for i, point in enumerate(cfg.walk_path):
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError(f"walk_path[{i}] must be [longitude, latitude]")
+        lon, lat = point
+        number(f"walk_path[{i}] longitude", lon)
+        number(f"walk_path[{i}] latitude", lat)
+        if not -180 <= lon <= 180 or not -90 < lat < 90:
+            raise ValueError(f"walk_path[{i}] coordinates out of range (poles are unsupported)")
+        points.append((lon, lat))
+    if len(set(points)) < 3:
+        raise ValueError("walk_path requires at least 3 distinct points")
+    for a, b in zip(points, points[1:] + points[:1]):
+        if a == b:
+            raise ValueError("walk_path has a zero-length segment; do not repeat the first point at the end")
+        if abs(a[0] - b[0]) > 180:
+            raise ValueError("walk_path crossing the antimeridian is unsupported")
+
+
 def load_config(path: str = "config.json") -> Config:
-    cfg = Config()
     p = Path(path)
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            for k, v in data.items():
-                if k == "walk_path":
-                    cfg.walk_path = [tuple(x) for x in v]
-                elif hasattr(cfg, k):
-                    setattr(cfg, k, v)
-        except Exception:
-            pass
+    if not p.is_file():
+        raise FileNotFoundError(f"Config not found: {p}. Copy and edit config.example.json first.")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid config {p}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Config must be a JSON object")
+    unknown = set(data) - {f.name for f in fields(Config)}
+    if unknown:
+        raise ValueError(f"Unknown config field(s): {', '.join(sorted(unknown))}")
+    cfg = Config(**data)
+    validate_config(cfg)
     return cfg
 
 
@@ -200,7 +271,9 @@ def meter_to_deg(lat: float, dx: float, dy: float) -> Tuple[float, float]:
 
 
 def geo_dist_m(lat1, lon1, lat2, lon2) -> float:
-    return math.hypot(lat2 - lat1, lon2 - lon1) * 111_320
+    avg_lat = math.radians((lat1 + lat2) / 2.0)
+    d_lon = (lon2 - lon1 + 180) % 360 - 180
+    return math.hypot(lat2 - lat1, d_lon * math.cos(avg_lat)) * 111_320
 
 
 # ============================================================
@@ -226,6 +299,9 @@ class GPSSimulator:
 
     def current_speed(self, elapsed: float) -> float:
         phase = (elapsed % self.cfg.speed_cycle_sec) / self.cfg.speed_cycle_sec * 2 * math.pi
+        if self.cfg.min_speed_mps is not None:
+            lo, hi = self.cfg.min_speed_mps, self.cfg.max_speed_mps
+            return lo / 2 + hi / 2 + (hi - lo) / 2 * math.sin(phase)
         return self.cfg.base_speed_mps + self.cfg.speed_amp * math.sin(phase)
 
     def lateral_offset(self, elapsed: float) -> float:
@@ -248,7 +324,7 @@ class MuMuController:
     def run(self, args: List[str], check: bool = True, timeout: int = 10) -> subprocess.CompletedProcess:
         cmd = [str(self.mgr)] + args
         return subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+                              encoding="utf-8", errors="replace", timeout=timeout, check=check)
 
     def set_location(self, lon: float, lat: float) -> bool:
         r = self.run([
@@ -266,9 +342,9 @@ class MuMuController:
         ], check=False)
         return r.returncode == 0
 
-    def force_stop(self, pkg: str):
+    def force_stop(self, pkg: str) -> bool:
         """强制结束 App 进程，确保下次启动从头（主页）开始，避免恢复上次的残留页。"""
-        self.adb_shell(f"am force-stop {pkg}")
+        return self.adb_shell(f"am force-stop {pkg}") is not None
 
     def shutdown(self):
         """关闭指定 MuMu 实例（清状态，再从头启动）。"""
@@ -298,7 +374,8 @@ class MuMuController:
 
     def start_player(self):
         if self.player.is_file():
-            subprocess.Popen([str(self.player)])
+            # GUI player must not keep a controller worker's stdout pipe open.
+            subprocess.Popen([str(self.player)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print(f"{CLR_P}MuMuPlayer not found at {self.player}, assuming already running{CLR_RST}")
 
@@ -311,6 +388,9 @@ class MuMuController:
                 capture_output=True, text=True, timeout=5,
                 encoding="utf-8", errors="replace",
             )
+            output = (r.stdout + "\n" + r.stderr).lower()
+            if r.returncode != 0 or "error:" in output or "exception" in output:
+                return None
             return r.stdout.strip()
         except Exception:
             return None
@@ -324,7 +404,7 @@ class MuMuController:
             [str(self.adb), "connect", addr],
             capture_output=True, text=True, timeout=5,
         )
-        return r.returncode == 0
+        return r.returncode == 0 and "connected to" in r.stdout.lower()
 
 
 # ============================================================
@@ -338,34 +418,32 @@ class UIController:
 
     def click_icon(self, icon_png: str, threshold: float = 0.75,
                    offset: Tuple[int, int] = (0, 0), long_press: bool = False) -> bool:
+        if not Path(icon_png).is_file():
+            return False
+        icon = cv2.imread(icon_png)
+        if icon is None:
+            return False
         screen_png = Path("screen.png")
         with screen_png.open("wb") as fp:
             subprocess.run(
                 [str(self.adb), "-s", self.addr, "exec-out", "screencap", "-p"],
-                stdout=fp, timeout=10,
+                stdout=fp, timeout=10, check=True,
             )
         screen = cv2.imread(str(screen_png))
-        icon = cv2.imread(icon_png)
-        if screen is None or icon is None:
+        if screen is None:
+            raise RuntimeError("ADB screenshot could not be decoded")
+        if icon.shape[0] > screen.shape[0] or icon.shape[1] > screen.shape[1]:
             return False
         res = cv2.matchTemplate(screen, icon, cv2.TM_CCOEFF_NORMED)
         _, score, _, loc = cv2.minMaxLoc(res)
-        if score < threshold:
+        if not math.isfinite(score) or score < threshold:
             return False
         x = loc[0] + icon.shape[1] // 2 + offset[0]
         y = loc[1] + icon.shape[0] // 2 + offset[1]
         if long_press:
-            subprocess.run(
-                [str(self.adb), "-s", self.addr, "shell", "input", "swipe",
-                 str(x), str(y), str(x), str(y), "2000"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            self.longpress(x, y)
         else:
-            subprocess.run(
-                [str(self.adb), "-s", self.addr, "shell", "input", "tap",
-                 str(x), str(y)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            self.tap(x, y)
         return True
 
     def tap(self, x: int, y: int):
@@ -373,6 +451,7 @@ class UIController:
             [str(self.adb), "-s", self.addr, "shell", "input", "tap",
              str(x), str(y)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=True,
         )
 
     def longpress(self, x: int, y: int):
@@ -380,12 +459,14 @@ class UIController:
             [str(self.adb), "-s", self.addr, "shell", "input", "swipe",
              str(x), str(y), str(x), str(y), "2500"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=True,
         )
 
     def back(self):
         subprocess.run(
             [str(self.adb), "-s", self.addr, "shell", "input", "keyevent", "4"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=True,
         )
 
 
@@ -393,7 +474,15 @@ class UIController:
 #  主运行逻辑
 # ============================================================
 
-def run(cfg: Config):
+def run(cfg: Config, *, event_callback=None, quiet: bool = False):
+    validate_config(cfg)
+    if cfg.auto_start_run and not cfg.allow_coordinate_fallback:
+        missing = [path for path in (cfg.tpl_begin, cfg.tpl_free, cfg.tpl_pause,
+                                     cfg.tpl_end, cfg.tpl_confirm_end)
+                   if not Path(path).is_file() or cv2.imread(path) is None]
+        if missing:
+            raise ValueError("Missing or unreadable button templates: " + ", ".join(missing)
+                             + ". Capture templates for the current app before running.")
     emu_dir, player_path = find_emu_dir()
     mu = MuMuController(emu_dir, player_path, cfg)
     gps = GPSSimulator(cfg)
@@ -416,53 +505,38 @@ def run(cfg: Config):
         mu.start_player()
 
     if not ready:
-        print(f"{CLR_A}Timed out waiting for MuMu{CLR_RST}")
-        return
+        raise RuntimeError("Timed out waiting for MuMu")
     print(f"{CLR_C}ADB connected: {mu.adb_addr}{CLR_RST}")
 
     # 取已安装应用列表（识别跑步软件）
     pkgs = mu.installed_pkgs()
 
-    # 尝试注入步频传感器（通过 ADB 模拟传感器事件）
-    inject_step_sensor = _try_inject_step_sensor(mu)
-
     ui = UIController(mu.adb, mu.adb_addr)
 
-    # 先强制结束 App，确保从主页(开始乐跑)从头启动，而不是恢复上次残留页
-    if cfg.run_pkg:
-        mu.force_stop(cfg.run_pkg)
-        time.sleep(1.0)
-
-    # 启动跑步应用：优先独立步道乐跑 App（绕开微信风控），否则回退微信小程序
-    run_pkgs = [cfg.run_pkg, "com.tencent.mm", "com.tencent.wework"]
-    launched = False
-    for pkg in run_pkgs:
-        if pkg in pkgs:
-            if pkg == cfg.run_pkg:
-                # 用 launcher 活动启动（等价桌面点图标）→ 稳定落到主页(开始乐跑)
-                mu.adb_shell(f"am start -n {pkg}/.activities.splash.SplashActivity")
-            else:
-                mu.launch_app(pkg)
-            print(f"{CLR_C}Launched run app: {pkg}{CLR_RST}")
-            time.sleep(cfg.window_delay_sec)
-            launched = True
-            break
-    if not launched:
-        print(f"{CLR_A}No run app found in installed packages{CLR_RST}")
-
-    # 自动点击进入跑步（开始乐跑 → 自由跑确认 → 等倒计时）
-    _auto_start_run(ui, cfg)
+    if cfg.run_pkg not in pkgs:
+        raise RuntimeError(f"Configured app is not installed: {cfg.run_pkg}")
+    if not mu.force_stop(cfg.run_pkg):
+        raise RuntimeError(f"Could not stop app: {cfg.run_pkg}")
+    time.sleep(1.0)
+    if mu.adb_shell(f"am start -n {cfg.run_pkg}/.activities.splash.SplashActivity") is None:
+        raise RuntimeError(f"Could not launch app: {cfg.run_pkg}")
+    print(f"{CLR_C}Launched run app: {cfg.run_pkg}{CLR_RST}")
+    time.sleep(cfg.window_delay_sec)
 
     # 定位到起点
     start_lon, start_lat = cfg.walk_path[0]
-    mu.set_location(start_lon, start_lat)
+    if not mu.set_location(start_lon, start_lat):
+        raise RuntimeError("Could not set the initial emulator location")
     print(f"{CLR_C}Initial position set{CLR_RST}")
+
+    # 起点设置成功后才发送开始操作。
+    _auto_start_run(ui, cfg)
 
     # 主循环：模拟行走
     idx, seg_dist, total_dist = 0, 0.0, 0.0
     t_start = t_prev = time.perf_counter()
     frame = 0
-    step_count = 0
+    simulated_steps = 0.0
     route = cfg.walk_path
 
     while True:
@@ -471,9 +545,7 @@ def run(cfg: Config):
         wait = tick - (now - t_prev)
         if wait > 0:
             time.sleep(wait)
-            now = t_prev + tick
-        else:
-            now = t_prev + max(0.01, tick)
+            now = time.perf_counter()
         dt = now - t_prev
         t_prev = now
         elapsed = now - t_start
@@ -508,20 +580,18 @@ def run(cfg: Config):
         final_lon = base_lon + d_lon
         final_lat = base_lat + d_lat
 
-        mu.set_location(final_lon, final_lat)
+        if not mu.set_location(final_lon, final_lat):
+            raise RuntimeError("Emulator location update failed; simulation stopped")
 
         # 步频模拟
         step_hz = 1.2 + (speed - 1.0) / 4.0 * 1.6
         step_hz = max(1.0, min(3.0, step_hz))
-        step_count += int(step_hz * dt)
-
-        # 通过 ADB 注入步数（如果支持）
-        if inject_step_sensor:
-            _inject_step_count(mu, step_count)
+        # 仅本地诊断数据；没有生成或注入 Android 传感器事件。
+        simulated_steps += step_hz * dt
 
         frame += 1
 
-        tbl = PrettyTable(["时间", "速度", "总路程", "步频", "帧数"])
+        tbl = PrettyTable(["时间", "模拟速度", "模拟路程", "模拟步频", "帧数"])
         tbl.add_row([
             f"{elapsed:7.1f}s",
             f"{speed:5.2f}m/s",
@@ -529,33 +599,45 @@ def run(cfg: Config):
             f"{step_hz:5.2f}Hz",
             f"{frame}",
         ])
-        os.system("cls" if os.name == "nt" else "clear")
-        print(f"{HEART}Budao Lepao Simulator (Enhanced){CLR_RST}")
-        print(tbl)
-        print(f"  Steps: {step_count}  |  OU noise: ({dx:+.2f}, {dy:+.2f})m")
+        if event_callback:
+            event_callback({"type": "progress", "progress": {
+                "distance_m": total_dist, "speed_mps": speed, "elapsed_s": elapsed,
+                "steps": int(simulated_steps), "lon": final_lon, "lat": final_lat,
+            }})
+        if not quiet:
+            os.system("cls" if os.name == "nt" else "clear")
+            print(f"{HEART}Budao Lepao Simulator (Enhanced){CLR_RST}")
+            print(tbl)
+            print(f"  Simulated steps (diagnostic only): {int(simulated_steps)}"
+                  f"  |  OU noise: ({dx:+.2f}, {dy:+.2f})m")
 
         if total_dist >= cfg.dist_limit_m:
-            print(f"{CLR_A}Target distance reached.{CLR_RST}")
+            print(f"{CLR_A}Local simulated distance reached.{CLR_RST}")
             # 自动结束（长按暂停 → 结束 → 确认结束）
             _auto_finish_run(ui, cfg)
             break
 
-    # 刷完关闭 MuMu
-    print(f"{CLR_P}Shutting down MuMu...{CLR_RST}")
-    mu.shutdown()
+    print(f"{CLR_P}Simulation complete; platform acceptance is unverified. "
+          f"MuMu remains open. Check the app's final record manually.{CLR_RST}")
+    if not cfg.auto_start_run:
+        print("Automatic finish is disabled. End any active session in the app manually.")
+    return {"status": "simulation_complete", "simulated_distance_m": total_dist,
+            "simulated_steps": int(simulated_steps), "platform_accepted": None}
 
 
 def _click_btn(ui: "UIController", cfg: Config, tpl: str, x: int, y: int, long_press: bool = False):
-    """图片识别优先(click_icon 模板匹配)；模板缺失/未命中则回退坐标。"""
+    """Only use legacy coordinates when explicitly enabled in configuration."""
     if ui.click_icon(tpl, threshold=cfg.click_threshold, long_press=long_press):
         print(f"[auto] {tpl}: image-match ok")
         return True
-    print(f"[auto] {tpl}: template miss, fallback coords ({x},{y})")
+    if not cfg.allow_coordinate_fallback:
+        raise RuntimeError(f"Button template not matched: {tpl}. Stopped without coordinate fallback.")
+    print(f"[auto] {tpl}: explicitly enabled coordinate fallback ({x},{y})")
     if long_press:
         ui.longpress(x, y)
     else:
         ui.tap(x, y)
-    return False
+    return True
 
 
 def _auto_start_run(ui: "UIController", cfg: Config):
@@ -569,7 +651,7 @@ def _auto_start_run(ui: "UIController", cfg: Config):
     time.sleep(1.8)
     _click_btn(ui, cfg, cfg.tpl_free, cfg.free_x, cfg.free_y)
     time.sleep(6.0)  # 等 3-2-1 倒计时
-    print(f"{CLR_C}[auto] run started{CLR_RST}")
+    print(f"{CLR_C}[auto] start clicks sent; app state is not verified{CLR_RST}")
 
 
 def _auto_finish_run(ui: "UIController", cfg: Config):
@@ -582,30 +664,19 @@ def _auto_finish_run(ui: "UIController", cfg: Config):
     _click_btn(ui, cfg, cfg.tpl_end, cfg.end_x, cfg.end_y)
     time.sleep(1.8)
     _click_btn(ui, cfg, cfg.tpl_confirm_end, cfg.confirm_x, cfg.confirm_y)
-    # 结束后退回主页，让 App 停在主页（下次启动恢复在主页，自动点击可靠）
-    time.sleep(1.2)
-    ui.back()
-    ui.back()
-
-
-def _try_inject_step_sensor(mu: MuMuController) -> bool:
-    """尝试建立步频传感器注入通道。返回是否成功。"""
-    try:
-        # 检查是否能访问 sensorservice
-        out = mu.adb_shell("dumpsys sensorservice 2>&1 | findstr /i sensor")
-        return out is not None
-    except Exception:
-        return False
-
-
-def _inject_step_count(mu: MuMuController, count: int):
-    """通过 ADB 写入步数到系统设置（Google Fit 兼容）。"""
-    mu.adb_shell(f"settings put global step_counter {count}")
+    print(f"{CLR_C}[auto] finish clicks sent; inspect the result in the app{CLR_RST}")
 
 
 if __name__ == "__main__":
     # 仅作脚本运行时包装 stdio（被导入/测试时不劫持）
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-    cfg = load_config()
-    run(cfg)
+    try:
+        cfg = load_config()
+        run(cfg)
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"Stopped: {exc}. No platform result has been verified.", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("Stopped by user. Inspect and end any active session in the app.", file=sys.stderr)
+        sys.exit(130)

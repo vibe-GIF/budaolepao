@@ -7,6 +7,8 @@ stub 掉 MuMuController / GPSSimulator / 磁盘扫描 / os.system，
 """
 
 from pathlib import Path
+from types import SimpleNamespace
+from itertools import count
 
 import main
 
@@ -39,12 +41,14 @@ def test_run_launches_run_app(tmp_path, monkeypatch):
 
         def force_stop(self, pkg):
             calls.append(("force_stop", pkg))
+            return True
 
         def shutdown(self):
             calls.append("shutdown")
 
         def set_location(self, lon, lat):
             calls.append(("set_location", lon, lat))
+            return True
 
         def adb_shell(self, cmd):
             calls.append(("adb_shell", cmd))
@@ -69,8 +73,9 @@ def test_run_launches_run_app(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "MuMuController", FakeMuMu)
     monkeypatch.setattr(main, "GPSSimulator", FakeGPS)
     monkeypatch.setattr(main, "find_emu_dir", lambda: (Path("emu"), Path("emu/MuMuPlayer.exe")))
-    monkeypatch.setattr(main, "_try_inject_step_sensor", lambda mu: False)
     monkeypatch.setattr(main.os, "system", lambda x: None)
+    clock = count(0, 0.1)
+    monkeypatch.setattr(main, "time", SimpleNamespace(perf_counter=lambda: next(clock), sleep=lambda _: None))
     monkeypatch.chdir(tmp_path)
 
     cfg = main.Config(
@@ -79,10 +84,14 @@ def test_run_launches_run_app(tmp_path, monkeypatch):
         window_delay_sec=0,      # 避免真实 sleep
         auto_start_run=False,    # 冒烟测试不点真按钮（避免 fake adb 报错）
     )
-    main.run(cfg)
+    result = main.run(cfg)
 
     # 关键断言：启动链路走到了，且用 launcher 意图启动了步道乐跑
     assert "adb_connect" in calls
     assert "installed_pkgs" in calls
     assert any(c[0] == "adb_shell" and "SplashActivity" in c[1] for c in calls)
     assert ("set_location", 114.4, 30.4) in calls
+    assert "shutdown" not in calls
+    assert not any("step_counter" in str(call) for call in calls)
+    assert result["platform_accepted"] is None
+    assert result["status"] == "simulation_complete"

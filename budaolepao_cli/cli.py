@@ -1,9 +1,13 @@
 import argparse
+import json
+import math
 import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 
-if sys.stdout.encoding != "utf-8":
+if sys.stdout.encoding != "utf-8" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
@@ -14,17 +18,27 @@ def main():
         add_help=False,
     )
     parser.add_argument("command", nargs="?", default="panel",
-                        choices=["run", "detect", "eval", "capture", "config", "scan", "route", "map", "settings", "dashboard", "setup", "panel", "-h", "--help"])
+                        choices=["run", "web", "mcp", "detect", "eval", "capture", "config", "scan", "route", "map", "settings", "dashboard", "setup", "panel", "-h", "--help"])
     parser.add_argument("-h", "--help", action="store_true", dest="help_flag")
 
     args, _ = parser.parse_known_args()
+
+    if args.command == "web":
+        web_main(sys.argv[2:])
+        return
+    if args.command == "mcp":
+        from .mcp_server import main as mcp_main
+        mcp_main(sys.argv[2:])
+        return
 
     if args.help_flag or args.command in ("-h", "--help"):
         print("Usage: lepao [command]")
         print()
         print("命令：")
         print("  (默认)   打开 TUI 控制中心，所有功能都在菜单里选")
-        print("  run      一键直接启动刷跑脚本")
+        print("  run      启动模拟器 PoC（需完成配置与模板准备）")
+        print("  web      启动本地可视化控制台（默认 http://127.0.0.1:8765）")
+        print("  mcp      启动 stdio MCP，连接同一个本地控制台服务")
         print("  -h       显示本帮助")
         print()
         print("其余检测/看板/评估/配置/工具都收在控制中心菜单里；")
@@ -68,19 +82,19 @@ def main():
         _capture(root)
 
     elif args.command == "config":
-        _config(root, sys.argv[2:])
+        sys.exit(_config(root, sys.argv[2:]))
 
     elif args.command == "scan":
         _scan_mumu(root)
 
     elif args.command == "route":
-        _set_route(root, sys.argv[2:])
+        sys.exit(_set_route(root, sys.argv[2:]))
 
     elif args.command == "map":
-        _map(root, sys.argv[2:])
+        sys.exit(_map(root, sys.argv[2:]))
 
     elif args.command == "settings":
-        _set_settings(root, sys.argv[2:])
+        sys.exit(_set_settings(root, sys.argv[2:]))
 
     elif args.command == "dashboard":
         import subprocess
@@ -88,43 +102,63 @@ def main():
         cmd = [sys.executable, str(script)]
         if "--demo" in sys.argv:
             cmd.append("--demo")
-        subprocess.run(cmd, cwd=str(root / "detection"))
+        sys.exit(subprocess.run(cmd, cwd=str(root / "detection")).returncode)
 
     elif args.command == "setup":
         import subprocess
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", str(root), "-q"],
             cwd=str(root),
         )
-        print("Done. Try: budaolepao -h")
+        if result.returncode == 0:
+            print("Done. Try: lepao -h")
+        else:
+            print("Installation failed.", file=sys.stderr)
+        sys.exit(result.returncode)
 
 
-def _show_config(root: Path):
+def web_main(argv=None):
+    parser = argparse.ArgumentParser(prog="lepao web", description="本地可视化控制台")
+    parser.add_argument("--port", type=int, default=8765, help="本机监听端口（默认 8765）")
+    args = parser.parse_args(argv)
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    from .web import serve
+    serve(port=args.port)
+
+
+def _show_config(root: Path) -> int:
     cfg = root / "poc" / "emulator_run" / "config.json"
     if cfg.exists():
-        import json
-        print(json.dumps(json.loads(cfg.read_text(encoding="utf-8")),
-                         indent=2, ensure_ascii=False))
+        try:
+            print(json.dumps(_read_config(root), indent=2, ensure_ascii=False,
+                             allow_nan=False))
+        except (OSError, ValueError, TypeError) as exc:
+            return _config_error(exc)
+        return 0
     else:
-        print("config.json not found")
+        return _config_error("config.json not found")
 
 
-def _config(root: Path, args: list):
-    """统一配置入口：budaolepao config [show|set|route|map] [options]"""
+def _config(root: Path, args: list) -> int:
+    """统一配置入口：lepao config [show|set|route|map] [options]"""
     if not args or args[0] == "show":
-        _show_config(root)
+        if len(args) > 1:
+            return _config_error("config show does not accept arguments")
+        return _show_config(root)
     elif args[0] == "set":
-        _set_settings(root, args[1:])
+        return _set_settings(root, args[1:])
     elif args[0] == "route":
-        _set_route(root, args[1:])
+        return _set_route(root, args[1:])
     elif args[0] == "map":
-        _map(root, args[1:])
+        return _map(root, args[1:])
     else:
-        print("Usage: budaolepao config [show|set|route|map]")
+        print("Usage: lepao config [show|set|route|map]")
         print("  config show                          # 显示当前配置")
         print("  config set --speed <m/s> --distance <m>  # 设置配速/里程")
         print("  config route lon,lat lon,lat ...     # 设置路线")
         print("  config map [次数]                    # 拾取器读剪贴板坐标")
+        return 2
 
 
 def _map(root: Path, args: list):
@@ -137,7 +171,7 @@ def _map(root: Path, args: list):
         args_list.append(args[1])  # mode (auto/manual)
     if len(args) > 2:
         args_list.append(args[2])  # address
-    subprocess.run(args_list, cwd=str(root / "poc" / "emulator_run"))
+    return subprocess.run(args_list, cwd=str(root / "poc" / "emulator_run")).returncode
 
 
 def _capture(root: Path):
@@ -238,130 +272,184 @@ def _scan_mumu(root: Path):
         print("MuMu not found on any drive")
 
 
-def _set_route(root: Path, args: list):
-    import json
+def _config_error(error) -> int:
+    print(f"Configuration error: {error}", file=sys.stderr)
+    return 2
 
+
+def _read_config(root: Path) -> dict:
     cfg_path = root / "poc" / "emulator_run" / "config.json"
     if not cfg_path.exists():
-        cfg_path = root / "poc" / "emulator_run" / "config.example.json"
-    config = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg_path = cfg_path.with_name("config.example.json")
 
-    if not args:
-        print("Current route:")
-        for i, (lon, lat) in enumerate(config["walk_path"]):
-            print(f"  {i+1}. {lon}, {lat}")
-        print()
-        print("Usage: budaolepao route lon,lat lon,lat ...")
-        print("  e.g. budaolepao route 114.405,30.4695 114.4065,30.4705")
-        print("  Get coordinates from: https://map.baidu.com")
-        return
+    def reject_constant(value):
+        raise ValueError(f"non-finite JSON value: {value}")
 
-    points = []
-    for arg in args:
-        try:
+    config = json.loads(cfg_path.read_text(encoding="utf-8-sig"),
+                        parse_constant=reject_constant)
+    if not isinstance(config, dict):
+        raise ValueError("configuration must be a JSON object")
+    return config
+
+
+def _write_config(root: Path, config: dict):
+    # Serialize before opening a file, then replace atomically so a failed write
+    # does not truncate the user's existing configuration.
+    content = json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False)
+    output = root / "poc" / "emulator_run" / "config.json"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         dir=output.parent, delete=False) as fp:
+            temporary = Path(fp.name)
+            fp.write(content)
+        temporary.replace(output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _positive_number(value, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite positive number")
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{label} must be a finite positive number")
+    return number
+
+
+def _speed_bounds(config: dict) -> tuple[float, float]:
+    lo, hi = config.get("min_speed_mps"), config.get("max_speed_mps")
+    if lo is None and hi is None:
+        base = _positive_number(config.get("base_speed_mps", 4.0), "speed")
+        amplitude = float(config.get("speed_amp", 0.0))
+        if not math.isfinite(amplitude) or amplitude < 0:
+            raise ValueError("speed_amp must be finite and nonnegative")
+        lo, hi = base - amplitude, base + amplitude
+    if lo is None or hi is None:
+        raise ValueError("min_speed_mps and max_speed_mps must be set together")
+    lo, hi = _positive_number(lo, "minimum speed"), _positive_number(hi, "maximum speed")
+    if lo > hi:
+        raise ValueError("minimum speed must not exceed maximum speed")
+    return lo, hi
+
+
+def _parse_speed(value: str) -> tuple[float, float]:
+    try:
+        speed = float(value)
+    except ValueError:
+        # Try each separator: this also permits scientific notation, e.g. 1e-1-2.
+        for match in re.finditer("-", value):
+            try:
+                lo = float(value[:match.start()])
+                hi = float(value[match.end():])
+            except ValueError:
+                continue
+            lo, hi = _positive_number(lo, "speed"), _positive_number(hi, "speed")
+            if lo > hi:
+                raise ValueError("minimum speed must not exceed maximum speed")
+            return lo, hi
+        raise ValueError(f"invalid speed: {value} (expected a number or min-max)")
+    speed = _positive_number(speed, "speed")
+    return speed, speed
+
+
+def _validate_route(points):
+    if len(points) < 3 or len(set(map(tuple, points))) < 3:
+        raise ValueError("route needs at least 3 distinct points")
+    for index, (lon, lat) in enumerate(points):
+        if not math.isfinite(lon) or not math.isfinite(lat):
+            raise ValueError("coordinates must be finite")
+        if not -180 <= lon <= 180 or not -90 < lat < 90:
+            raise ValueError("longitude must be in [-180, 180] and latitude in (-90, 90)")
+        if points[index] == points[(index + 1) % len(points)]:
+            raise ValueError("consecutive route points must differ (including the closing edge)")
+        if abs(lon - points[(index + 1) % len(points)][0]) > 180:
+            raise ValueError("route crossing the antimeridian is unsupported")
+
+
+def _set_route(root: Path, args: list) -> int:
+    try:
+        config = _read_config(root)
+        if not args:
+            print("Current route:")
+            for i, (lon, lat) in enumerate(config.get("walk_path", [])):
+                print(f"  {i+1}. {lon}, {lat}")
+            print("Usage: lepao route lon,lat lon,lat lon,lat ...")
+            return 0
+
+        points = []
+        for arg in args:
             parts = arg.split(",")
-            lon, lat = float(parts[0]), float(parts[1])
-            points.append([lon, lat])
-        except (ValueError, IndexError):
-            print(f"Invalid: {arg} (expected lon,lat)")
-            return
+            if len(parts) != 2:
+                raise ValueError(f"invalid coordinate: {arg} (expected lon,lat)")
+            points.append([float(parts[0]), float(parts[1])])
+        _validate_route(points)
+        config["walk_path"] = points
+        _write_config(root, config)
+    except (OSError, ValueError, TypeError) as exc:
+        return _config_error(exc)
 
-    if len(points) < 3:
-        print("Need at least 3 points")
-        return
-
-    config["walk_path"] = points
-    out_path = root / "poc" / "emulator_run" / "config.json"
-    out_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Route saved ({len(points)} points):")
     for lon, lat in points:
         print(f"  {lon}, {lat}")
-    print(f"Distance: {config.get('dist_limit_m', 3000)}m")
+    return 0
 
 
-def _set_settings(root: Path, args: list):
-    import json
+def _set_settings(root: Path, args: list) -> int:
+    try:
+        config = _read_config(root)
+        if not args:
+            speed_min, speed_max = _speed_bounds(config)
+            distance = _positive_number(config.get("dist_limit_m", 3000), "distance")
+            speed_str = f"{speed_min:g}-{speed_max:g}" if speed_min != speed_max else f"{speed_min:g}"
+            print("Current settings:")
+            print(f"  Speed:     {speed_str} m/s")
+            print(f"  Distance:  {distance:g} m")
+            print(f"  Route:     {len(config.get('walk_path', []))} points")
+            print("Usage: lepao config set --speed <min-max|number> --distance <m>")
+            return 0
 
-    cfg_path = root / "poc" / "emulator_run" / "config.json"
-    if not cfg_path.exists():
-        cfg_path = root / "poc" / "emulator_run" / "config.example.json"
-    config = json.loads(cfg_path.read_text(encoding="utf-8"))
-
-    if not args:
-        # Show current settings
-        lo = config.get('min_speed_mps', config.get('base_speed_mps', 4.0))
-        hi = config.get('max_speed_mps', config.get('base_speed_mps', 4.0))
-        speed_str = f"{lo:.1f}-{hi:.1f}" if lo != hi else f"{lo:.1f}"
-        print("Current settings:")
-        print(f"  Speed:     {speed_str} m/s")
-        print(f"  Distance:  {config.get('dist_limit_m', 3000)} m")
-        print(f"  Route:     {len(config.get('walk_path', []))} points")
-        print()
-        print("Usage: lepao config set --speed <min-max|单点> --distance <m>")
-        print("  e.g. lepao config set --speed 4-5 --distance 3000")
-        print("       lepao config set --speed 4.5 --distance 3000")
-        return
-
-    # Parse flags
-    speed_min = config.get("min_speed_mps", config.get("base_speed_mps", 4.0))
-    speed_max = config.get("max_speed_mps", config.get("base_speed_mps", 4.0))
-    distance = config.get("dist_limit_m")
-    i = 0
-    while i < len(args):
-        if args[i] == "--speed" and i + 1 < len(args):
-            # 支持 "min-max" 或单点
-            val = args[i + 1]
-            if "-" in val:
-                try:
-                    a, b = val.split("-", 1)
-                    speed_min = float(a)
-                    speed_max = float(b)
-                except ValueError:
-                    print(f"Invalid speed range: {val} (期望 4-5)")
-                    return
+        # Apply explicit replacements before validating their final values so
+        # this command can also repair an invalid saved speed or distance.
+        legacy_speed = config.get("min_speed_mps") is None and config.get("max_speed_mps") is None
+        speed_changed = False
+        index = 0
+        while index < len(args):
+            option = args[index]
+            if option not in ("--speed", "--speed-min", "--speed-max", "--distance") or index + 1 == len(args):
+                raise ValueError(f"unknown or incomplete option: {option}")
+            value = args[index + 1]
+            if option == "--speed":
+                config["min_speed_mps"], config["max_speed_mps"] = _parse_speed(value)
+                speed_changed = True
+            elif option == "--speed-min":
+                config["min_speed_mps"] = _positive_number(value, "minimum speed")
+                speed_changed = True
+            elif option == "--speed-max":
+                config["max_speed_mps"] = _positive_number(value, "maximum speed")
+                speed_changed = True
             else:
-                try:
-                    speed_min = speed_max = float(val)
-                except ValueError:
-                    print(f"Invalid speed: {val}")
-                    return
-            i += 2
-        elif args[i] == "--speed-min" and i + 1 < len(args):
-            try:
-                speed_min = float(args[i + 1])
-            except ValueError:
-                print(f"Invalid speed-min: {args[i + 1]}")
-                return
-            i += 2
-        elif args[i] == "--speed-max" and i + 1 < len(args):
-            try:
-                speed_max = float(args[i + 1])
-            except ValueError:
-                print(f"Invalid speed-max: {args[i + 1]}")
-                return
-            i += 2
-        elif args[i] == "--distance" and i + 1 < len(args):
-            try:
-                distance = float(args[i + 1])
-            except ValueError:
-                print(f"Invalid distance: {args[i + 1]}")
-                return
-            i += 2
-        else:
-            print(f"Unknown or incomplete option: {args[i]}")
-            return
+                config["dist_limit_m"] = _positive_number(value, "distance")
+            index += 2
 
-    # 规范 min/max
-    if speed_min > speed_max:
-        speed_min, speed_max = speed_max, speed_min
-    config["min_speed_mps"] = speed_min
-    config["max_speed_mps"] = speed_max
-    config["base_speed_mps"] = (speed_min + speed_max) / 2.0
-    config["dist_limit_m"] = distance
+        if speed_changed and legacy_speed:
+            for field, sign in (("min_speed_mps", -1), ("max_speed_mps", 1)):
+                if config.get(field) is None:
+                    config[field] = float(config.get("base_speed_mps", 4.0)) + sign * float(config.get("speed_amp", 0.0))
+        speed_min, speed_max = _speed_bounds(config)
+        distance = _positive_number(config.get("dist_limit_m", 3000), "distance")
+        if speed_changed:
+            config["min_speed_mps"] = speed_min
+            config["max_speed_mps"] = speed_max
+            config["base_speed_mps"] = speed_min / 2.0 + speed_max / 2.0
+        config["dist_limit_m"] = distance
+        _write_config(root, config)
+    except (OSError, ValueError, TypeError) as exc:
+        return _config_error(exc)
 
-    out_path = root / "poc" / "emulator_run" / "config.json"
-    out_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
-    speed_str = f"{speed_min:.1f}-{speed_max:.1f}" if speed_min != speed_max else f"{speed_min:.1f}"
-    print(f"Settings saved:")
+    speed_str = f"{speed_min:g}-{speed_max:g}" if speed_min != speed_max else f"{speed_min:g}"
+    print("Settings saved:")
     print(f"  Speed:     {speed_str} m/s")
-    print(f"  Distance:  {distance} m")
+    print(f"  Distance:  {distance:g} m")
+    return 0

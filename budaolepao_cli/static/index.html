@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>乐跑 · 本地控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到控制台</a>
+  <aside class="sidebar" aria-label="主导航">
+    <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">L<span>·</span></span><span>乐跑控制台<small>LOCAL WORKSPACE</small></span></a>
+    <p class="nav-caption">工作空间</p>
+    <nav>
+      <a href="#overview"><span aria-hidden="true">◫</span>任务概览</a>
+      <a href="#configuration"><span aria-hidden="true">⌁</span>路线与参数</a>
+      <a href="#environment"><span aria-hidden="true">◇</span>运行准备</a>
+      <a href="#templates"><span aria-hidden="true">▧</span>按钮模板</a>
+      <a href="#journal"><span aria-hidden="true">≡</span>任务日志</a>
+    </nav>
+    <div class="sidebar-foot"><span class="connection-dot" id="sideDot"></span><div id="sideConnection">正在连接本地服务</div><small>数据保存在这台电脑上</small></div>
+  </aside>
+
+  <main id="main" tabindex="-1">
+    <header class="page-header" id="overview">
+      <div><p class="eyebrow">BUDAO LEPAO / CONTROL ROOM</p><h1>路线与任务控制台</h1><p class="subtitle">准备好路线与环境，再开始你的本地任务。</p></div>
+      <div class="connection-badge" id="connection" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connectionText">正在连接</span></div>
+    </header>
+
+    <div class="notice"><span class="notice-icon" aria-hidden="true">i</span><p><strong>本地预演约 8 秒加速完成，不操作模拟器；轨迹时长为推算值。</strong> 模拟器任务结束后，请在 App 中检查记录，本控制台不确认平台成绩是否有效。</p></div>
+    <div class="feedback" id="feedback" role="alert" hidden></div>
+
+    <section class="stats" aria-label="实时任务统计">
+      <article class="stat"><span class="stat-label">任务状态 <span class="stat-index">01</span></span><strong id="statStatus">待开始</strong><span class="stat-detail" id="statMode">还没有运行任务</span></article>
+      <article class="stat"><span class="stat-label">本地累计里程 <span class="stat-index">02</span></span><strong><span id="statDistance">0.00</span><small>km</small></strong><span class="stat-detail" id="statTarget">目标 —</span></article>
+      <article class="stat"><span class="stat-label">当前速度 <span class="stat-index">03</span></span><strong><span id="statSpeed">0.00</span><small>m/s</small></strong><span class="stat-detail" id="statPace">配速 —</span></article>
+      <article class="stat"><span class="stat-label">轨迹推算时长 <span class="stat-index">04</span></span><strong id="statElapsed">00:00</strong><span class="stat-detail" id="statSteps">模拟步数 0</span></article>
+    </section>
+
+    <div class="overview-grid">
+      <section class="card route-card" aria-labelledby="routeTitle">
+        <div class="card-heading"><div><p class="eyebrow">ROUTE PREVIEW</p><h2 id="routeTitle">路线预览</h2></div><span class="pill" id="routePointCount">0 个路线点</span></div>
+        <div class="route-canvas-wrap"><canvas id="routeCanvas" aria-label="路线坐标预览，详细坐标可在下方路线编辑框查看"></canvas><div id="routeEmpty" class="route-empty">在下方填入至少 3 个路线点</div><div class="route-compass" aria-hidden="true">N<span>↑</span></div></div>
+        <div class="route-legend"><span><i class="legend-line"></i>计划路线</span><span><i class="legend-point"></i>当前位置</span><small>本地坐标投影 · 非道路地图</small></div>
+      </section>
+
+      <section class="card control-card" aria-labelledby="controlTitle">
+        <div class="card-heading"><div><p class="eyebrow">READY, SET</p><h2 id="controlTitle">运行任务</h2></div><span class="live-mark" aria-hidden="true"></span></div>
+        <div class="run-progress"><div><span>本地任务进度</span><strong id="progressPercent">0%</strong></div><progress id="progressBar" value="0" max="100" aria-label="本地任务进度"></progress></div>
+        <p class="task-message" id="taskMessage" aria-live="polite">先试一次本地预演，检查路线和参数。</p>
+        <button id="previewButton" class="button button-secondary" type="button"><span aria-hidden="true">▷</span>开始本地预演</button>
+        <button id="startButton" class="button button-primary" type="button"><span aria-hidden="true">▶</span>开始模拟器任务</button>
+        <button id="stopButton" class="button button-stop" type="button" disabled>停止当前任务</button>
+        <p class="control-note">有草稿时先保存，未编辑时使用服务端最新配置。预演约 8 秒加速完成；模拟器任务会先检查准备，停止后请在 App 中检查状态。</p>
+      </section>
+    </div>
+
+    <section class="card" id="configuration" aria-labelledby="configTitle">
+      <div class="card-heading"><div><p class="eyebrow">PLAN YOUR ROUTE</p><h2 id="configTitle">路线与参数</h2></div><span class="pill" id="saveState" aria-live="polite">正在读取</span></div>
+      <div class="config-recovery"><button id="reloadConfigButton" class="text-button" type="button" aria-controls="configConfirm" aria-expanded="false">重新读取已保存配置</button><button id="exampleConfigButton" class="text-button" type="button" aria-controls="configConfirm" aria-expanded="false">载入示例草稿</button><span>载入只替换表单，保存后才写入本机。</span></div>
+      <div id="configConfirm" class="inline-confirm" role="alertdialog" aria-labelledby="configConfirmTitle" aria-describedby="configConfirmText" hidden>
+        <div><strong id="configConfirmTitle">替换当前未保存草稿？</strong><p id="configConfirmText"></p></div>
+        <div class="confirm-actions"><button id="configConfirmCancel" class="button button-secondary button-compact" type="button">保留草稿</button><button id="configConfirmAccept" class="button button-primary button-compact" type="button">确认替换</button></div>
+      </div>
+      <p id="draftWarning" class="draft-warning" aria-live="polite" hidden>当前草稿尚未保存，刷新或离开页面会丢失这些修改。</p>
+      <form id="configForm">
+        <div class="config-grid">
+          <div class="route-editor"><label for="routeInput">路线坐标</label><p class="field-hint" id="routeHint">每行一组「经度,纬度」，至少 3 个不同点。路线会自动闭合，不需重复首点。</p><textarea id="routeInput" rows="10" spellcheck="false" required aria-describedby="routeHint" placeholder="114.4050,30.4695&#10;114.4065,30.4705&#10;114.4080,30.4708"></textarea><p id="routeError" class="field-error" aria-live="polite"></p></div>
+          <div class="settings-fields">
+            <div class="field-row"><div class="field"><label for="distanceInput">目标里程 <span>米</span></label><input id="distanceInput" type="number" min="1" step="any" required></div><div class="field"><label for="instanceInput">模拟器实例编号</label><input id="instanceInput" type="number" min="0" step="1" required></div></div>
+            <div class="field-row"><div class="field"><label for="minSpeedInput">最低速度 <span>m/s</span></label><input id="minSpeedInput" type="number" min="0.01" step="any" required></div><div class="field"><label for="maxSpeedInput">最高速度 <span>m/s</span></label><input id="maxSpeedInput" type="number" min="0.01" step="any" required></div></div>
+            <div class="check-option"><input id="autoStartInput" type="checkbox"><label for="autoStartInput">自动操作开始与结束按钮<small>需要完成下方 5 张按钮模板的准备。</small></label></div>
+            <details class="advanced"><summary>高级按钮设置</summary><div class="check-option"><input id="fallbackInput" type="checkbox"><label for="fallbackInput">允许固定坐标兜底<small>仅适用于已经校准的模拟器界面；默认关闭，避免模板未匹配时误点。</small></label></div></details>
+          </div>
+        </div>
+        <div class="form-footer"><p id="configSource">参数只保存到本机。</p><button id="saveConfigButton" class="button button-primary button-compact" type="submit">保存路线与参数</button></div>
+      </form>
+    </section>
+
+    <div class="environment-grid" id="environment">
+      <section class="card" aria-labelledby="emulatorTitle">
+        <div class="card-heading"><div><p class="eyebrow">LOCAL ENVIRONMENT</p><h2 id="emulatorTitle">MuMu 运行环境</h2></div></div>
+        <form id="emulatorForm"><div class="field"><label for="emuDirInput">MuMu 工具目录</label><input id="emuDirInput" type="text" spellcheck="false" placeholder="包含 MuMuManager.exe 和 adb.exe 的文件夹"><p class="field-hint">填写这台 Windows 电脑上的安装路径。</p></div><div class="field"><label for="playerPathInput">模拟器程序路径</label><input id="playerPathInput" type="text" spellcheck="false" placeholder="MuMuPlayer.exe 的完整路径"></div><div class="form-footer"><span id="emulatorSaveState" class="muted" aria-live="polite">尚未读取</span><button id="saveEmulatorButton" class="button button-secondary button-compact" type="submit">保存路径</button></div></form>
+      </section>
+      <section class="card" aria-labelledby="preflightTitle">
+        <div class="card-heading"><div><p class="eyebrow">PREFLIGHT</p><h2 id="preflightTitle">准备检查</h2></div><button id="checkButton" class="text-button" type="button">重新检查 ↗</button></div>
+        <div id="preflightSummary" class="check-summary" aria-live="polite">正在检查运行准备…</div><ul id="checkList" class="check-list"></ul>
+      </section>
+    </div>
+
+    <section class="card" id="templates" aria-labelledby="templatesTitle">
+      <div class="card-heading"><div><p class="eyebrow">MATCH THE INTERFACE</p><h2 id="templatesTitle">按钮模板</h2></div><span class="pill" id="templateCount">0 / 5 已准备</span></div>
+      <p class="section-description">从当前 App 界面裁剪按钮，选择对应的 PNG 图片。每张不超过 2 MiB，上传后保存在本机。</p>
+      <div id="templateGrid" class="template-grid"></div>
+    </section>
+
+    <section class="card log-card" id="journal" aria-labelledby="journalTitle">
+      <div class="card-heading"><div><p class="eyebrow">TASK JOURNAL</p><h2 id="journalTitle">实时日志</h2></div><label class="inline-check"><input id="followLogsInput" type="checkbox" checked>跟随最新日志</label></div>
+      <ol id="logList" class="log-list" aria-label="任务日志" tabindex="0"><li class="log-empty" id="logEmpty">尚无日志，运行任务后会在这里显示。</li></ol>
+    </section>
+
+    <details class="mcp-help"><summary><span>连接 AI 工具</span><span class="muted">MCP 接入说明</span></summary><div><p>在项目环境中运行 <code>lepao web</code> 打开本控制台。为支持 MCP 的客户端添加本地命令 <code>lepao mcp</code>，可连接同一个本地控制服务。</p><p>网页和 MCP 共用任务状态；一处启动，另一处也能查看进度和停止。保持本地服务运行即可。</p></div></details>
+    <footer class="page-footer"><span>乐跑 · 本地控制台</span><span>平台结果尚未验证</span></footer>
+  </main>
+</body>
+</html>

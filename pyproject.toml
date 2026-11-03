@@ -25,6 +25,20 @@ dependencies = [
 
 [project.scripts]
 lepao = "budaolepao_cli.cli:main"
+lepao-web = "budaolepao_cli.cli:web_main"
+lepao-mcp = "budaolepao_cli.mcp_server:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27,<1"]
+mcp = ["mcp>=1.12,<2", "httpx>=0.27,<1"]
+
+[tool.setuptools.package-data]
+budaolepao_cli = ["static/*.html", "static/*.js", "static/*.css"]
 
 [tool.setuptools.packages.find]
 include = ["budaolepao_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "poc/emulator_run", "detection/tests", "eval/tests"]
+pythonpath = [".", "detection", "eval", "poc/emulator_run"]
+addopts = "--import-mode=importlib"

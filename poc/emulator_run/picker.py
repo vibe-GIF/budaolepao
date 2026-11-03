@@ -11,9 +11,7 @@ lepao map - 打开地图拾取器，从剪贴板循环读取坐标
 依赖：pip install pyperclip
 """
 
-import json
 import sys
-import time
 import webbrowser
 import re
 from pathlib import Path
@@ -38,10 +36,12 @@ def get_clipboard() -> str:
 
 def parse_coords(text: str) -> list:
     coords = []
-    for match in re.findall(r'([\d.]+),([\d.]+)', text):
+    number = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
+    pattern = rf'(?<![\w.+-])({number})\s*,\s*({number})(?![\w.+-])'
+    for match in re.findall(pattern, text):
         try:
             lon, lat = float(match[0]), float(match[1])
-            if 70 < lon < 140 and 15 < lat < 55:
+            if -180 <= lon <= 180 and -90 < lat < 90:
                 coords.append([lon, lat])
         except ValueError:
             continue
@@ -49,9 +49,11 @@ def parse_coords(text: str) -> list:
 
 
 def main():
-    config_path = Path(__file__).parent / "config.json"
-    if not config_path.exists():
-        config_path = Path(__file__).parent / "config.example.json"
+    # Use the same validation and destination as `lepao config route`, including
+    # when run directly without an editable installation.
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root))
+    from budaolepao_cli.cli import _set_route
 
     # 打开地图
     webbrowser.open("https://lbs.amap.com/tools/picker")
@@ -80,15 +82,11 @@ def main():
             print(f"FAIL no coords (clipboard: {text[:60]})")
 
     if all_coords:
-        config = json.loads(config_path.read_text(encoding='utf-8'))
-        config['walk_path'] = all_coords
-        config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding='utf-8')
-        print(f"\nSaved {len(all_coords)} coords to config.json")
-        for c in all_coords:
-            print(f"  {c[0]:.6f}, {c[1]:.6f}")
+        return _set_route(root, [f"{lon},{lat}" for lon, lat in all_coords])
     else:
         print("\nNo coords saved")
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
