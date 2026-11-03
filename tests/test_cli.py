@@ -12,6 +12,32 @@ import pytest
 from budaolepao_cli import cli
 
 
+def test_web_command_dispatches_selected_port(monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "budaolepao_cli.web", SimpleNamespace(serve=lambda **kw: calls.append(kw)))
+    monkeypatch.setattr(sys, "argv", ["lepao", "web", "--port", "8877"])
+    cli.main()
+    assert calls == [{"port": 8877}]
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "invalid"])
+def test_web_invalid_port_never_starts_service(monkeypatch, port):
+    def must_not_run(**kwargs):
+        pytest.fail("invalid port started the service")
+    monkeypatch.setitem(sys.modules, "budaolepao_cli.web", SimpleNamespace(serve=must_not_run))
+    with pytest.raises(SystemExit) as exc:
+        cli.web_main(["--port", port])
+    assert exc.value.code == 2
+
+
+def test_mcp_command_passes_only_transport_arguments(monkeypatch):
+    calls = []
+    monkeypatch.setitem(sys.modules, "budaolepao_cli.mcp_server", SimpleNamespace(main=lambda argv: calls.append(argv)))
+    monkeypatch.setattr(sys, "argv", ["lepao", "mcp"])
+    cli.main()
+    assert calls == [[]]
+
+
 @pytest.fixture
 def config_root(tmp_path):
     folder = tmp_path / "poc" / "emulator_run"

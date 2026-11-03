@@ -1,5 +1,8 @@
 __pycache__/
 .venv/
+.lepao/
+build/
+dist/
 *.pyc
 *.pyo
 .pytest_cache/

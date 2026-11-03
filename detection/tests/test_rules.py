@@ -127,13 +127,16 @@ def test_speed_physiological_normal(engine):
 def test_noise_spectrum_white_noise(engine):
     cfg = NoiseSpectrumConfig()
     rule = engine._rules["noise_spectrum"]
-    t0 = time.time()
+    # A short random sample can cross the correlation threshold by chance.
+    # Keep this regression fixture reproducible without changing global RNG state.
+    rng = random.Random(0)
+    t0 = 1_700_000_000.0
     lat, lon = 29.50, 106.57
     points = []
     for i in range(60):
         # 白噪声：每步独立随机，lag-1 自相关接近 0
-        lat += 0.00001 + 0.00002 * (random.random() - 0.5)
-        lon += 0.00001 + 0.00002 * (random.random() - 0.5)
+        lat += 0.00001 + 0.00002 * (rng.random() - 0.5)
+        lon += 0.00001 + 0.00002 * (rng.random() - 0.5)
         points.append(make_point(lon, lat, ts=t0 + i * 0.4))
     trace = make_trace(points)
     result = rule.evaluate(trace, cfg)

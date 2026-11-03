@@ -18,10 +18,18 @@ def main():
         add_help=False,
     )
     parser.add_argument("command", nargs="?", default="panel",
-                        choices=["run", "detect", "eval", "capture", "config", "scan", "route", "map", "settings", "dashboard", "setup", "panel", "-h", "--help"])
+                        choices=["run", "web", "mcp", "detect", "eval", "capture", "config", "scan", "route", "map", "settings", "dashboard", "setup", "panel", "-h", "--help"])
     parser.add_argument("-h", "--help", action="store_true", dest="help_flag")
 
     args, _ = parser.parse_known_args()
+
+    if args.command == "web":
+        web_main(sys.argv[2:])
+        return
+    if args.command == "mcp":
+        from .mcp_server import main as mcp_main
+        mcp_main(sys.argv[2:])
+        return
 
     if args.help_flag or args.command in ("-h", "--help"):
         print("Usage: lepao [command]")
@@ -29,6 +37,8 @@ def main():
         print("命令：")
         print("  (默认)   打开 TUI 控制中心，所有功能都在菜单里选")
         print("  run      启动模拟器 PoC（需完成配置与模板准备）")
+        print("  web      启动本地可视化控制台（默认 http://127.0.0.1:8765）")
+        print("  mcp      启动 stdio MCP，连接同一个本地控制台服务")
         print("  -h       显示本帮助")
         print()
         print("其余检测/看板/评估/配置/工具都收在控制中心菜单里；")
@@ -105,6 +115,16 @@ def main():
         else:
             print("Installation failed.", file=sys.stderr)
         sys.exit(result.returncode)
+
+
+def web_main(argv=None):
+    parser = argparse.ArgumentParser(prog="lepao web", description="本地可视化控制台")
+    parser.add_argument("--port", type=int, default=8765, help="本机监听端口（默认 8765）")
+    args = parser.parse_args(argv)
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    from .web import serve
+    serve(port=args.port)
 
 
 def _show_config(root: Path) -> int:

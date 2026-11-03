@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -116,8 +117,8 @@ def validate_config(cfg: Config) -> None:
     for name in ("auto_start_run", "allow_coordinate_fallback"):
         if type(getattr(cfg, name)) is not bool:
             raise ValueError(f"{name} must be a boolean")
-    if not isinstance(cfg.run_pkg, str) or not cfg.run_pkg or any(c.isspace() for c in cfg.run_pkg):
-        raise ValueError("run_pkg must be a nonempty package name without whitespace")
+    if not isinstance(cfg.run_pkg, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", cfg.run_pkg):
+        raise ValueError("run_pkg must be an Android package identifier")
     for name in ("tpl_begin", "tpl_free", "tpl_pause", "tpl_end", "tpl_confirm_end"):
         if not isinstance(getattr(cfg, name), str) or not getattr(cfg, name):
             raise ValueError(f"{name} must be a nonempty path")
@@ -373,7 +374,8 @@ class MuMuController:
 
     def start_player(self):
         if self.player.is_file():
-            subprocess.Popen([str(self.player)])
+            # GUI player must not keep a controller worker's stdout pipe open.
+            subprocess.Popen([str(self.player)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print(f"{CLR_P}MuMuPlayer not found at {self.player}, assuming already running{CLR_RST}")
 
@@ -472,7 +474,7 @@ class UIController:
 #  主运行逻辑
 # ============================================================
 
-def run(cfg: Config):
+def run(cfg: Config, *, event_callback=None, quiet: bool = False):
     validate_config(cfg)
     if cfg.auto_start_run and not cfg.allow_coordinate_fallback:
         missing = [path for path in (cfg.tpl_begin, cfg.tpl_free, cfg.tpl_pause,
@@ -597,11 +599,17 @@ def run(cfg: Config):
             f"{step_hz:5.2f}Hz",
             f"{frame}",
         ])
-        os.system("cls" if os.name == "nt" else "clear")
-        print(f"{HEART}Budao Lepao Simulator (Enhanced){CLR_RST}")
-        print(tbl)
-        print(f"  Simulated steps (diagnostic only): {int(simulated_steps)}"
-              f"  |  OU noise: ({dx:+.2f}, {dy:+.2f})m")
+        if event_callback:
+            event_callback({"type": "progress", "progress": {
+                "distance_m": total_dist, "speed_mps": speed, "elapsed_s": elapsed,
+                "steps": int(simulated_steps), "lon": final_lon, "lat": final_lat,
+            }})
+        if not quiet:
+            os.system("cls" if os.name == "nt" else "clear")
+            print(f"{HEART}Budao Lepao Simulator (Enhanced){CLR_RST}")
+            print(tbl)
+            print(f"  Simulated steps (diagnostic only): {int(simulated_steps)}"
+                  f"  |  OU noise: ({dx:+.2f}, {dy:+.2f})m")
 
         if total_dist >= cfg.dist_limit_m:
             print(f"{CLR_A}Local simulated distance reached.{CLR_RST}")

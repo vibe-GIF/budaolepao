@@ -51,6 +51,7 @@ def _menu() -> Table:
         ("7", "配置-路线", "设置路线 (config route)"),
         ("8", "扫描 MuMu", "扫描所有磁盘找 MuMu (scan)"),
         ("9", "采集按钮", "截图选区存按钮图 (capture)"),
+        ("10", "网页控制台", "路线预览、配置、运行日志与停止 (web)"),
     ]
     for no, act, desc in rows:
         t.add_row(no, act, desc)
@@ -132,6 +133,9 @@ def main():
             Prompt.ask("按回车返回")
         elif choice == "9":
             _spawn(["capture"])
+            Prompt.ask("按回车返回")
+        elif choice == "10":
+            _spawn(["web"])
             Prompt.ask("按回车返回")
         else:
             console.print("[red]无效输入[/]")
